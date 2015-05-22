@@ -1,369 +1,476 @@
-/*
- * Author: Chase Barnes ("Wheffle")
- * <altoid287@gmail.com>
- * 
- */
-
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using UnityEngine;
 
 namespace OrbitalSurveyPlus
 {
-    public class ModuleOrbitalSurveyorPlus : ModuleOrbitalSurveyor, IAnimatedModule, IResourceConsumer
+    [KSPAddon(KSPAddon.Startup.SpaceCentre, false)]
+    public class OrbitalSurveyPlus : MonoBehaviour
     {
-
-        [KSPField(guiActive = true, guiName = "Survey Progress", guiFormat = "P0", isPersistant = true)]
-        float scanPercent = 0;
-
-        [KSPField(guiActive = true, guiName = "Status")]
-        string scanStatus = "standby";
-
-        [KSPField(isPersistant = true)]
-        string currentBody = "";
-
-        [KSPField(isPersistant = true)]
-        double lastUpdate = -1;
-
-        private bool freshLoaded = false;
-
-        private float orbitsToScan = 1f;
-        //private int defaultOrbitMin = 25000; //in meters above sea level
-        //private int defaultOrbitMax = 1500000; //in meters above sea level
-        private bool requirePolarOrbit = true;
-        private double electricDrain = 0.75; //per second
-
-        private PartResourceDefinition resType = PartResourceLibrary.Instance.GetDefinition("ElectricCharge");
-
-        private int polarIncTolerance = 10;
-
-        private int orbitMin = 25000;
-        private int orbitMax = 1500000;
-
-        private bool scanDone = false;
-
-        private Orbit orbit = null;
-        private CelestialBody body = null;
-
-        public override void OnStart(StartState state)
+        public static float OrbitsToScan
         {
-            base.OnStart(state);
+            get;
+            private set;
+        }
 
-            //change "Perform orbital survey" button name to make more sense with this mod
-            Events["PerformSurvey"].guiName = "Transmit survey data";
+        public static int OrbitMinimum
+        {
+            get;
+            private set;
+        }
 
-            //load settings
-            ConfigNode settingsRoot = ConfigNode.Load("GameData/OrbitalSurveyPlus/settings.cfg");
-            ConfigNode settings = settingsRoot.GetNode("SETTINGS");
+        public static int OrbitMaximum
+        {
+            get;
+            private set;
+        }
+
+        public static float ScannerElectricDrain
+        {
+            get;
+            private set;
+        }
+
+        public static bool RequirePolarOrbit
+        {
+            get;
+            private set;
+        }
+
+        public static bool ExtendedSurvey
+        {
+            get;
+            private set;
+        }
+
+        public static bool BiomeMapRequiresScan
+        {
+            get;
+            private set;
+        }
+
+        
+
+        private string sOrbitsToScan;
+        private string sOrbitMinimum;
+        private string sOrbitMaximum;
+        private string sElectricDrain;
+
+        private static bool primaryInitialize = true;
+
+        private static ApplicationLauncherButton appButtonBiomeOverlay = null;
+        private static ApplicationLauncherButton appButtonConfigWindow = null;
+        private static bool showConfigWindow = false;
+        private static string settingsPath = "GameData/OrbitalSurveyPlus/settings.cfg";
+
+        private static int lastBiomeTextureId = 0;
+
+        private static Rect configWindowRect;
+
+        public void Awake()
+        {
+            //only do this portion once ever
+            if (primaryInitialize)
+            {
+                primaryInitialize = false;
+                Log("Initializing");
+
+                //initialize app buttons
+                appButtonBiomeOverlay = ApplicationLauncher.Instance.AddModApplication(
+                    ToggleBiomeOverlay,
+                    ToggleBiomeOverlay,
+                    null,
+                    null,
+                    null,
+                    null,
+                    ApplicationLauncher.AppScenes.FLIGHT | ApplicationLauncher.AppScenes.MAPVIEW,
+                    GameDatabase.Instance.GetTexture("OrbitalSurveyPlus/Textures/OSPIcon-Biome", false)
+                    );
+
+                appButtonConfigWindow = ApplicationLauncher.Instance.AddModApplication(
+                    ShowConfigWindow,
+                    HideConfigWindow,
+                    null,
+                    null,
+                    HideConfigWindow,
+                    null,
+                    ApplicationLauncher.AppScenes.SPACECENTER,
+                    GameDatabase.Instance.GetTexture("OrbitalSurveyPlus/Textures/OSPIcon-Config", false)
+                    );
+
+
+                //initialize settings defaults
+                SetConfigsToDefault();
+
+                //load settings if config file exists
+                if (System.IO.File.Exists(settingsPath))
+                {
+                    ConfigNode settingsRoot = ConfigNode.Load(settingsPath);
+                    ConfigNode settings = settingsRoot.GetNode("SETTINGS");
+
+                    if (settings.HasValue("biomeMapRequiresScan"))
+                    {
+                        bool result;
+                        bool a = bool.TryParse(settings.GetValue("biomeMapRequiresScan"), out result);
+                        if (a) OrbitalSurveyPlus.BiomeMapRequiresScan = result;
+                    }
+
+                    if (settings.HasValue("extendedSurvey"))
+                    {
+                        bool result;
+                        bool a = bool.TryParse(settings.GetValue("extendedSurvey"), out result);
+                        if (a) OrbitalSurveyPlus.ExtendedSurvey = result;
+                    }
+
+                    if (settings.HasValue("orbitsToScan"))
+                    {
+                        float result;
+                        bool a = float.TryParse(settings.GetValue("orbitsToScan"), out result);
+                        if (a) OrbitalSurveyPlus.OrbitsToScan = result;
+                    }
+
+
+                    if (settings.HasValue("orbitMinimum"))
+                    {
+                        int result;
+                        bool a = Int32.TryParse(settings.GetValue("orbitMinimum"), out result);
+                        if (a) OrbitalSurveyPlus.OrbitMinimum = result;
+                    }
+
+
+                    if (settings.HasValue("orbitMaximum"))
+                    {
+                        int result;
+                        bool a = Int32.TryParse(settings.GetValue("orbitMaximum"), out result);
+                        if (a) OrbitalSurveyPlus.OrbitMaximum = result;
+                    }
+
+
+                    if (settings.HasValue("requirePolarOrbit"))
+                    {
+                        bool result;
+                        bool a = Boolean.TryParse(settings.GetValue("requirePolarOrbit"), out result);
+                        if (a) OrbitalSurveyPlus.RequirePolarOrbit = result;
+                    }
+
+
+                    if (settings.HasValue("electricDrain"))
+                    {
+                        float result;
+                        bool a = float.TryParse(settings.GetValue("electricDrain"), out result);
+                        if (a) OrbitalSurveyPlus.ScannerElectricDrain = result;
+                    }
+                }
+                else
+                {
+                    Log("setings.cfg not found - creating new one with defaults");
+                    Save();
+                }
+
+                //config window position
+                configWindowRect = new Rect(50f, 100f, 300f, 180f);
+            }
+
+            //set in-game menu strings
+            SetUIStrings();
+
+        }
+
+        public static void ToggleBiomeOverlay()
+        {
+            //since button is a toggle, keep it at "disabled" graphic
+            appButtonBiomeOverlay.SetFalse(false);
+
+            Vessel vessel = FlightGlobals.ActiveVessel;
+            CelestialBody body = FlightGlobals.getMainBody();
             
-            if (settings.HasValue("orbitsToScan"))
+            //sanity check
+            if (vessel == null || body == null)
             {
-                double result;
-                bool a = Double.TryParse(settings.GetValue("orbitsToScan"), out result);
-                if (a) orbitsToScan = (float)result;
+                Log("Error: vessel or body is null!");
+                return;
+            }
+            
+            //scan check
+            if (OrbitalSurveyPlus.BiomeMapRequiresScan && !ResourceMap.Instance.IsPlanetScanned(body.flightGlobalsIndex))
+            {
+                ScreenMessages.PostScreenMessage(String.Format("Biome Map Unavailable: No survey data available for {0}",
+                    body.RevealName()), 
+                    5.0f, ScreenMessageStyle.UPPER_CENTER);
+                return;
+            }
+            
+            //run map comparison before forcing "HideOverlay()" on any scanner modules which deletes current map (took me hours to find out this was happening...)
+            //state check
+            bool biomeMapShowing = false;
+            if (body.ResourceMap != null && body.ResourceMap.GetInstanceID() == OrbitalSurveyPlus.lastBiomeTextureId)
+            {
+                biomeMapShowing = true;
             }
 
-            if (settings.HasValue("orbitMinimum"))
+            //check to see if Orbital Surveyor is on current vessel
+            //active necessary functions
+            foreach (Part p in vessel.Parts)
             {
-                int result;
-                bool a = Int32.TryParse(settings.GetValue("orbitMinimum"), out result);
-                if (a) minThreshold = result;
-            }
-
-            if (settings.HasValue("orbitMaximum"))
-            {
-                int result;
-                bool a = Int32.TryParse(settings.GetValue("orbitMaximum"), out result);
-                if (a) maxThreshold = result;
-            }
-
-            if (settings.HasValue("requirePolarOrbit"))
-            {
-                bool result;
-                bool a = Boolean.TryParse(settings.GetValue("requirePolarOrbit"), out result);
-                if (a) requirePolarOrbit = result;
-            }
-
-            if (settings.HasValue("electricDrain"))
-            {
-                double result;
-                bool a = Double.TryParse(settings.GetValue("electricDrain"), out result);
-                if (a) electricDrain = result;
-            }
-
-            //vessel load flags
-            scanDone = CheckPlanetScanned();
-            freshLoaded = true;
-        }
-
-        public override void OnFixedUpdate()
-        {
-            base.OnFixedUpdate();
-
-            //get orbit and body
-            orbit = vessel.GetOrbit();
-            body = orbit.referenceBody;
-
-            //check to see if body is same as currentBody,
-            //otherwise reset scan progress to 0
-            if (body.RevealName() != currentBody)
-            {
-                //new body encountered: reset scanner and update orbit parameters
-                scanPercent = 0;
-                lastUpdate = -1;
-                currentBody = body.RevealName();
-
-                //update orbit cutoffs here
-                UpdateOrbitParameters();
-
-                //appropriately activate scanner
-                scanDone = CheckPlanetScanned();
-                SetScannerActive(!scanDone);
-            }
-
-            if (!scanDone)
-            {
-                //check to see if scan is done
-                if (CheckPlanetScanned())
+                foreach (PartModule m in p.Modules)
                 {
-                    //scan is done, shut down scanning portion of module
-                    SetScannerActive(false);
-                }
-                else
-                {
-                    //perform scan
-                    Scan();
-                }
-            }
-
-            freshLoaded = false;
-        }
-
-        private void UpdateOrbitParameters()
-        {
-            orbitMin = Math.Max(minThreshold, ((int)body.Radius) / 10);
-            orbitMax = Math.Min(maxThreshold, ((int)body.Radius) * 5);
-
-            //Pe under atmosphere doesn't count as stable orbit, but that is
-            //checked "on the fly" to mimic how the stock surveyor works
-        }
-
-        private void Scan()
-        {
-
-            //check to see if scan is needed
-            if (scanPercent < 1)
-            {
-                //check suitable orbit
-                if (ConditionsMet())
-                {
-                    //get time since last update
-                    double ut = Planetarium.GetUniversalTime();
-                    if (lastUpdate == -1)
+                    if (m.moduleName == "ModuleOrbitalScannerPlus")
                     {
-                        //first update: do nothing
-                        lastUpdate = ut;
+                        ModuleOrbitalScannerPlus scanner = (ModuleOrbitalScannerPlus)m;
+                        scanner.HideOverlay();
                     }
-                    else if (ut - lastUpdate > 0)
-                    {
-                        //time lapse has occurred: update
-                        double timeElapsed = ut - lastUpdate;
-                        lastUpdate = ut;
-
-                        //if vessel was freshly loaded and in the middle of a scan, decide what to do
-                        bool skipDrain = false;
-                        if (freshLoaded)
-                        {
-                            if (!HasElectricChargeGenerator())
-                            {
-                                //if no power generator exists, put scan update on hold
-                                ScreenMessages.PostScreenMessage("Survey Scan Was Idle: No power generator detected", 6.0f, ScreenMessageStyle.UPPER_CENTER);
-                                return;
-                            }
-                            else
-                            {
-                                //power generator onboard, but skip electrical drain for next update (could be huge)
-                                skipDrain = true;
-                            }
-                        }
-
-                        //drain electric charge
-                        double drain = electricDrain * timeElapsed;
-                        Vessel.ActiveResource ar = vessel.GetActiveResource(resType);
-
-                        if (skipDrain || ar.amount >= drain)
-                        {
-                            //calculate scan percentage completed
-                            double period = orbit.period;
-                            double pct_scanned = timeElapsed / period * orbitsToScan;
-                            scanPercent += (float)pct_scanned;
-
-                            if (scanPercent >= 1)
-                            {
-                                scanPercent = 1;
-                                ScreenMessages.PostScreenMessage("Survey Scan Completed", 6.0f, ScreenMessageStyle.UPPER_CENTER);
-                            }
-
-                            scanStatus = "scanning";
-                        }
-                        else
-                        {
-                            scanStatus = "not enough " + resType.name;
-                        }
-
-                        if (!skipDrain) part.RequestResource(resType.id, drain);
-
-                    }
-
                 }
-                else
-                {
-                    //orbit is not suitable
-                    scanStatus = "unsuitable orbit";
-                }
+            }
+
+            //overlay switch
+            if (biomeMapShowing)
+            {
+                //turn off
+                body.SetResourceMap(null);
             }
             else
             {
-                //scan is completed
-                scanStatus = "survey completed";
+                //turn on
+                UnityEngine.Texture2D biomeTexture = body.BiomeMap.CompileRGB();
+                body.SetResourceMap(biomeTexture);
+                OrbitalSurveyPlus.lastBiomeTextureId = body.ResourceMap.GetInstanceID();
             }
-
         }
 
-        private bool ConditionsMet()
+        public static void ShowConfigWindow()
         {
-            if (orbit == null || body == null) return false;
+            showConfigWindow = true;
+        }
 
-            double pe = orbit.PeA;
-            double ap = orbit.ApA;
-            double inc = orbit.inclination;
+        public static void HideConfigWindow()
+        {
+            showConfigWindow = false;
+        }
 
-            //check Pe and Ap are within parameters
-            bool orbitCheck = pe > orbitMin && ap < orbitMax && ap > 0;
-
-            //if planet has atmosphere, Pe under atmosphere doesn't count as stable orbit
-            if (body.atmosphere) orbitCheck = orbitCheck && pe > body.atmosphereDepth;
-
-            //check inclination
-            bool incCheck = !requirePolarOrbit ||
-                (inc > 90 - polarIncTolerance && inc < 90 + polarIncTolerance);
-
-            if (orbitCheck && incCheck)
+        public void OnGUI()
+        {
+            if (showConfigWindow)
             {
-                return true;
-            }
+                Rect rect = GUILayout.Window(
+                    GetInstanceID(), 
+                    OrbitalSurveyPlus.configWindowRect, 
+                    DrawConfigWindow, 
+                    "Orbital Survey Plus",
+                    GUILayout.ExpandHeight(true),
+                    GUILayout.ExpandWidth(true)
+                );
 
-            return false;
+                OrbitalSurveyPlus.configWindowRect = rect;
+            }
         }
 
-        private void SetScannerActive(bool active)
+        public void DrawConfigWindow(int windowId)
         {
-            if (active)
+            bool change = false;
+            
+
+            GUILayout.BeginVertical();
+
+            //------------------------------
+
+            GUILayout.BeginHorizontal();
+            bool biomeMapRequiresScan = GUILayout.Toggle(OrbitalSurveyPlus.BiomeMapRequiresScan, "  Biome Map Requires Scan");
+            if (biomeMapRequiresScan != OrbitalSurveyPlus.BiomeMapRequiresScan)
             {
-                scanDone = false;
-                Fields["scanPercent"].guiActive = true;
-                Fields["scanStatus"].guiActive = true;
+                OrbitalSurveyPlus.BiomeMapRequiresScan = biomeMapRequiresScan;
+                change = true;
             }
-            else
+            GUILayout.EndHorizontal();
+
+            //------------------------------
+
+            GUILayout.BeginHorizontal();
+            bool extendedSurvey = GUILayout.Toggle(OrbitalSurveyPlus.ExtendedSurvey, "  Extend Orbital Surveyor (scan is not instant)");
+            if (extendedSurvey != OrbitalSurveyPlus.ExtendedSurvey)
             {
-                scanDone = true;
-                Fields["scanPercent"].guiActive = false;
-                Fields["scanStatus"].guiActive = false;
+                OrbitalSurveyPlus.ExtendedSurvey = extendedSurvey;
+                change = true;
             }
-        }
+            GUILayout.EndHorizontal();
 
-        private bool CheckPlanetScanned()
-        {
-            if (body == null) return false;
-            return ResourceMap.Instance.IsPlanetScanned(body.flightGlobalsIndex);
-        }
+            //************************************************************
+            bool showExtendedSurveyOptions = extendedSurvey;
+            //************************************************************
 
-        private bool HasElectricChargeGenerator()
-        {
-            //determine whether vessel has power generation
-            //This only 
-            foreach (Part p in vessel.GetActiveParts())
+            //------------------------------
+
+            GUILayout.BeginHorizontal();
+            string labelRequirePolarOrbit = showExtendedSurveyOptions ?
+                "  Extended Scan Requires Polar Orbit" :
+                "<color=#6d6d6d>  Extended Scan Requires Polar Orbit</color>";
+            bool requirePolarOrbit = GUILayout.Toggle(OrbitalSurveyPlus.RequirePolarOrbit, labelRequirePolarOrbit);
+            if (requirePolarOrbit != OrbitalSurveyPlus.RequirePolarOrbit)
             {
-
-                foreach (PartModule module in p.Modules)
-                {
-                    if (module.moduleName == "ModuleDeployableSolarPanel")
-                    {
-                        ModuleDeployableSolarPanel panel = (ModuleDeployableSolarPanel)module;
-                        if (panel.panelState == ModuleDeployableSolarPanel.panelStates.EXTENDED) return true;
-                    }
-
-                    if (module.moduleName == "ModuleGenerator")
-                    {
-                        ModuleGenerator gen = (ModuleGenerator)module;
-                        if (gen.generatorIsActive)
-                        {
-                            foreach (ModuleGenerator.GeneratorResource genRes in gen.outputList)
-                            {
-                                if (genRes.name == resType.name && genRes.rate > 0) return true;
-                            }
-                        }
-                    }
-                }
-                
+                OrbitalSurveyPlus.RequirePolarOrbit = requirePolarOrbit;
+                change = true;
             }
+            
+            GUILayout.EndHorizontal();
+            
 
-            return false;
-        }
+            //------------------------------------------------------
+
+            GUILayout.BeginHorizontal();
+
+            GUILayout.BeginVertical();
+
+            GUILayout.Label(showExtendedSurveyOptions ?
+                "Orbits Needed to Scan" :
+                "<color=#6d6d6d>Orbits Needed to Scan</color>");
+            GUILayout.Label(showExtendedSurveyOptions ?
+                "Scanner ElectricCharge Drain:" :
+                "<color=#6d6d6d>Scanner ElectricCharge Drain:</color>");
+            GUILayout.Label("Survey Minimum Altitude:");
+            GUILayout.Label("Survey Maximum Altitude:");
+            GUILayout.EndVertical();
 
 
-        public new void PerformSurvey()
-        {
-            //block stock "PerformSurvey" event from firing unless scan is at 100%
+            //-------------------------------------------------------
 
-            if (scanPercent < 1)
+            GUILayout.BeginVertical();
+
+            GUILayout.BeginHorizontal();
+            sOrbitsToScan = GUILayout.TextField(sOrbitsToScan);
+
+            float orbitsToScan;
+            if (float.TryParse(sOrbitsToScan, out orbitsToScan) &&
+                orbitsToScan != OrbitalSurveyPlus.OrbitsToScan)
             {
-                if (!ConditionsMet())
-                {
-                    ScreenMessages.PostScreenMessage(
-                        String.Format("Survey Scan Incomplete: You must be in a stable {0} between {1}km and {2}km",
-                        requirePolarOrbit ? "polar orbit" : "orbit", orbitMin / 1000, orbitMax / 1000),
-                        5.0f, ScreenMessageStyle.UPPER_CENTER);
-                }
-                else
-                {
-                    ScreenMessages.PostScreenMessage("Survey Scan Incomplete (" + Math.Round(scanPercent * 100) + "%)", 3.0f, ScreenMessageStyle.UPPER_CENTER);
-                }
+                OrbitalSurveyPlus.OrbitsToScan = orbitsToScan;
+                change = true;
             }
-            else
+            GUILayout.EndHorizontal();
+
+            //-------------------------------------------------------
+
+            GUILayout.BeginHorizontal();
+            sElectricDrain = GUILayout.TextField(sElectricDrain);
+
+            float electricDrain;
+            if (float.TryParse(sElectricDrain, out electricDrain) &&
+                electricDrain != OrbitalSurveyPlus.ScannerElectricDrain)
             {
-                base.PerformSurvey();
+                OrbitalSurveyPlus.ScannerElectricDrain = electricDrain;
+                change = true;
             }
-        }
+            GUILayout.EndHorizontal();
 
-        
-        public override string GetInfo()
-        {
-            //show electric charge info 
-            String s = base.GetInfo();
-            if (electricDrain > 0)
+            //-------------------------------------------------------
+
+            GUILayout.BeginHorizontal();
+            sOrbitMinimum = GUILayout.TextField(sOrbitMinimum);
+            
+            int orbitMinimum;
+            if (int.TryParse(sOrbitMinimum, out orbitMinimum) &&
+                orbitMinimum != OrbitalSurveyPlus.OrbitMinimum)
             {
-                s += "\n\n<b><color=#99ff00ff>Requires (while scanning):</color></b>";
-                s += "\nElectric Charge: " + electricDrain + "/sec.";
+                OrbitalSurveyPlus.OrbitMinimum = orbitMinimum;
+                change = true;
             }
-            return s;
+            GUILayout.EndHorizontal();
+
+            //-------------------------------------------------------
+
+            GUILayout.BeginHorizontal();
+            sOrbitMaximum = GUILayout.TextField(sOrbitMaximum);
+            
+            int orbitMaximum;
+            if (int.TryParse(sOrbitMaximum, out orbitMaximum) &&
+                orbitMaximum != OrbitalSurveyPlus.OrbitMaximum)
+            {
+                OrbitalSurveyPlus.OrbitMaximum = orbitMaximum;
+                change = true;
+            }
+            GUILayout.EndHorizontal();
+
+            //-------------------------------------------------------
+            GUILayout.EndVertical();
+
+            GUILayout.EndHorizontal();
+
+            //------------------------------
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Reset to Defaults"))
+            {
+                SetConfigsToDefault();
+                SetUIStrings();
+                change = true;
+            }
+            GUILayout.EndHorizontal();
+
+            //------------------------------
+
+            GUILayout.EndVertical();
+
+            GUI.DragWindow();
+
+            if (change)
+            {
+                Save();
+            }
         }
 
-        public List<PartResourceDefinition> GetConsumedResources()
+        public static void SetConfigsToDefault()
         {
-            List<PartResourceDefinition> list = new List<PartResourceDefinition>();
-            list.Add(resType);
-            return list;
+            OrbitalSurveyPlus.BiomeMapRequiresScan = true;
+            OrbitalSurveyPlus.ExtendedSurvey = true;
+            OrbitalSurveyPlus.OrbitsToScan = 1.00f;
+            OrbitalSurveyPlus.OrbitMinimum = 25000;
+            OrbitalSurveyPlus.OrbitMaximum = 1500000;
+            OrbitalSurveyPlus.ScannerElectricDrain = 0.75f;
+            OrbitalSurveyPlus.RequirePolarOrbit = true;
+            
         }
 
-        public new void EnableModule()
+        public void SetUIStrings()
         {
-            base.EnableModule();
-            lastUpdate = -1;
-            freshLoaded = false;
+            sOrbitsToScan = OrbitalSurveyPlus.OrbitsToScan.ToString();
+            sOrbitMinimum = OrbitalSurveyPlus.OrbitMinimum.ToString();
+            sOrbitMaximum = OrbitalSurveyPlus.OrbitMaximum.ToString();
+            sElectricDrain = OrbitalSurveyPlus.ScannerElectricDrain.ToString();
+
+            //make sure floats are shown to be decimals to user
+            if (!sOrbitsToScan.Contains("."))
+            {
+                sOrbitsToScan += ".0";
+            }
+
+            if (!sElectricDrain.Contains("."))
+            {
+                sElectricDrain += ".0";
+            }
         }
 
-        
+        public void Save()
+        {
+            ConfigNode file = new ConfigNode();
+
+            ConfigNode settings = file.AddNode("SETTINGS");
+
+            settings.AddValue("biomeMapRequiresScan", OrbitalSurveyPlus.BiomeMapRequiresScan);
+            settings.AddValue("extendedSurvey", OrbitalSurveyPlus.ExtendedSurvey);
+            settings.AddValue("orbitsToScan", OrbitalSurveyPlus.OrbitsToScan);
+            settings.AddValue("orbitMinimum", OrbitalSurveyPlus.OrbitMinimum);
+            settings.AddValue("orbitMaximum", OrbitalSurveyPlus.OrbitMaximum);
+            settings.AddValue("electricDrain", OrbitalSurveyPlus.ScannerElectricDrain);
+            settings.AddValue("requirePolarOrbit", OrbitalSurveyPlus.RequirePolarOrbit);
+            
+
+            file.Save(settingsPath);
+        }
+
+        public static void Log(String log)
+        {
+            PDebug.Log("[OrbitalSurveyPlus] " + log);
+        }
+
     }
 }
